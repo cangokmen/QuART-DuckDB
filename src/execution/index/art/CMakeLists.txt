@@ -16,7 +16,8 @@ add_library_unity(
   node48.cpp
   prefix.cpp
   prefix_handle.cpp
-  const_prefix_handle.cpp)
+  const_prefix_handle.cpp
+  quart_builder.cpp)
 
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_execution_index_art>

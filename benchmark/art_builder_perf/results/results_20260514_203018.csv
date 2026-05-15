@@ -1,0 +1,7 @@
+N,method,rep,build_ns
+500000,repeated_inserts,1,157694091
+500000,art_builder,1,29277404
+500000,quart_builder,1,21583358
+2000000,repeated_inserts,1,648568467
+2000000,art_builder,1,66245315
+2000000,quart_builder,1,59381802

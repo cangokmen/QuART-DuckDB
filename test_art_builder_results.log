@@ -1,0 +1,11 @@
+Filters: [art-builder],[quart-builder],[art-individual]
+
+[0/5] (0%): Test ART bulk build with ARTBuilder
+[1/5] (20%): Test ART bulk build with QuARTBuilder
+[2/5] (40%): Test QuARTBuilder and ARTBuilder produce identical results
+[3/5] (60%): ART individual inserts correctness
+[4/5] (80%): Compare three insertion methods produce identical results
+[5/5] (100%): Compare three insertion methods produce identical results
+===============================================================================
+All tests passed (2138 assertions in 5 test cases)
+

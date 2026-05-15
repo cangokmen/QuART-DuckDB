@@ -1,5 +1,6 @@
 #include "duckdb/execution/index/art/node256.hpp"
 
+#include "duckdb/execution/index/art/leaf.hpp"
 #include "duckdb/execution/index/art/node48.hpp"
 
 namespace duckdb {
@@ -9,6 +10,19 @@ void Node256::InsertChild(ART &art, Node &node, const uint8_t byte, const Node c
 	auto &n = handle.Get();
 	n.count++;
 	n.children[byte] = child;
+}
+
+void Node256::BulkInsertInlinedLeaves(ART &art, Node &node, const uint8_t *bytes, const row_t *row_id_values) {
+	NodeHandle<Node256> handle(art, node);
+	auto &n = handle.Get();
+
+	for (uint16_t i = 0; i < CAPACITY; i++) {
+		D_ASSERT(!n.children[bytes[i]].HasMetadata());
+		Node leaf;
+		Leaf::New(leaf, row_id_values[i]);
+		n.count++;
+		n.children[bytes[i]] = leaf;
+	}
 }
 
 void Node256::DeleteChild(ART &art, Node &node, const uint8_t byte) {

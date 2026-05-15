@@ -54,6 +54,10 @@ public:
 	static void InsertChild(ART &art, Node &node, const uint8_t byte, const Node child);
 	//! Delete the child at byte.
 	static void DeleteChild(ART &art, Node &node, const uint8_t byte);
+	//! Bulk-inserts CAPACITY inlined leaf nodes into a freshly allocated Node256.
+	//! bytes[i] is the byte key and row_ids[i] is the row ID for the i-th entry.
+	//! The arrays must each have exactly CAPACITY elements. All byte values must be distinct.
+	static void BulkInsertInlinedLeaves(ART &art, Node &node, const uint8_t *bytes, const row_t *row_id_values);
 	//! Replace the child at byte.
 	void ReplaceChild(const uint8_t byte, const Node child) {
 		D_ASSERT(count > SHRINK_THRESHOLD);

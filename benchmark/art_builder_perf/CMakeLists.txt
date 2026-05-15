@@ -1,0 +1,3 @@
+add_executable(art_builder_perf art_builder_perf.cpp)
+target_link_libraries(art_builder_perf duckdb_static test_helpers)
+link_extension_libraries(art_builder_perf "")

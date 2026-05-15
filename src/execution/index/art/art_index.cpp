@@ -7,6 +7,7 @@
 #include "duckdb/execution/index/art/art_key.hpp"
 #include "duckdb/execution/index/art/art_operator.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
+#include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
@@ -22,6 +23,8 @@ namespace {
 class ARTBuildBindData : public IndexBuildBindData {
 public:
 	bool sorted = false;
+	//! Use QuARTBuilder instead of ARTBuilder for sorted bulk builds.
+	bool use_quart = false;
 };
 
 unique_ptr<IndexBuildBindData> ARTBuildBind(IndexBuildBindInput &input) {
@@ -31,7 +34,9 @@ unique_ptr<IndexBuildBindData> ARTBuildBind(IndexBuildBindInput &input) {
 
 	// We used to not sort for VARCHAR and multi-column indexes with the old sort implementation
 	// The new sorting implementation handles these cases much better and sorting improves performance now
-	bind_data->sorted = true;
+	// force_unsorted_index_build disables the sorted bulk-build path (for benchmarking repeated-insert cost).
+	bind_data->sorted = !ClientConfig::GetConfig(input.context).force_unsorted_index_build;
+	bind_data->use_quart = ClientConfig::GetConfig(input.context).use_quart_index_build;
 
 	return std::move(bind_data);
 }
@@ -110,6 +115,7 @@ void ARTBuildSinkUnsorted(IndexBuildSinkInput &input, DataChunk &key_chunk, Data
 }
 
 void ARTBuildSinkSorted(IndexBuildSinkInput &input, DataChunk &key_chunk, DataChunk &row_chunk) {
+	auto &bind_data = input.bind_data->Cast<ARTBuildBindData>();
 	auto &l_state = input.local_state.Cast<ARTBuildLocalState>();
 	auto &storage = input.table.GetStorage();
 	auto &l_index = l_state.local_index;
@@ -118,7 +124,10 @@ void ARTBuildSinkSorted(IndexBuildSinkInput &input, DataChunk &key_chunk, DataCh
 	auto art = make_uniq<ART>(input.info.index_name, l_index->GetConstraintType(), l_index->GetColumnIds(),
 	                          l_index->table_io_manager, l_index->unbound_expressions, storage.db,
 	                          l_index->Cast<ART>().allocators);
-	if (art->Build(l_state.keys, l_state.row_ids, key_chunk.size()) != ARTConflictType::NO_CONFLICT) {
+
+	auto conflict_type = bind_data.use_quart ? art->BuildQuART(l_state.keys, l_state.row_ids, key_chunk.size())
+	                                         : art->Build(l_state.keys, l_state.row_ids, key_chunk.size());
+	if (conflict_type != ARTConflictType::NO_CONFLICT) {
 		throw ConstraintException("Data contains duplicates on indexed column(s)");
 	}
 

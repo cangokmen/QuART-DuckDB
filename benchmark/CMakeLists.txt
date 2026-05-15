@@ -6,6 +6,7 @@ include_directories(include)
 add_third_party(imdb)
 
 add_subdirectory(micro)
+add_subdirectory(art_builder_perf)
 list(FIND DUCKDB_EXTENSION_NAMES tpch _index)
 if(${_index} GREATER -1)
   add_subdirectory(tpch)

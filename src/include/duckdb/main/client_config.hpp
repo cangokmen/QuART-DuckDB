@@ -79,6 +79,11 @@ struct ClientConfig {
 	//! If this context should also try to use the available replacement scans
 	//! True by default
 	bool use_replacement_scans = true;
+	//! Use QuARTBuilder for bulk ART index builds (dense-leaf-group optimization), used for testing
+	bool use_quart_index_build = false;
+	//! Force the unsorted (one-key-at-a-time) ART insert path instead of the sorted bulk builder.
+	//! Used for benchmarking to measure repeated-insert performance vs. bulk-build strategies.
+	bool force_unsorted_index_build = false;
 
 	//! The maximum amount of memory to keep buffered in a streaming query result. Default: 1mb.
 	idx_t streaming_buffer_size = 1000000;

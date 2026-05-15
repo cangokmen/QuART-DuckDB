@@ -5,6 +5,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/index/art/art_builder.hpp"
+#include "duckdb/execution/index/art/quart_builder.hpp"
 #include "duckdb/execution/index/art/art_key.hpp"
 #include "duckdb/execution/index/art/art_merger.hpp"
 #include "duckdb/execution/index/art/art_operator.hpp"
@@ -477,6 +478,29 @@ void ART::GenerateKeyVectors(ArenaAllocator &allocator, DataChunk &input, Vector
 ARTConflictType ART::Build(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count) {
 	ArenaAllocator arena(BufferAllocator::Get(db));
 	ARTBuilder builder(arena, *this, keys, row_ids);
+	builder.Init(tree, row_count - 1);
+
+	auto result = builder.Build();
+	if (result != ARTConflictType::NO_CONFLICT) {
+		return result;
+	}
+
+#ifdef DEBUG
+	set<row_t> row_ids_debug;
+	Iterator it(*this);
+	it.FindMinimum(tree);
+	ARTKey empty_key = ARTKey();
+	RowIdSetOutput output(row_ids_debug, NumericLimits<idx_t>().Maximum());
+	it.Scan(empty_key, output, false);
+	D_ASSERT(row_count == row_ids_debug.size());
+#endif
+
+	return ARTConflictType::NO_CONFLICT;
+}
+
+ARTConflictType ART::BuildQuART(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count) {
+	ArenaAllocator arena(BufferAllocator::Get(db));
+	QuARTBuilder builder(arena, *this, keys, row_ids);
 	builder.Init(tree, row_count - 1);
 
 	auto result = builder.Build();

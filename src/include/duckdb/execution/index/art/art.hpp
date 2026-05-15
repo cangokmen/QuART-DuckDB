@@ -124,6 +124,8 @@ public:
 
 	//! Build an ART from a vector of sorted keys and their row IDs.
 	ARTConflictType Build(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count);
+	//! Build an ART using the QuARTBuilder (dense-leaf-group optimization).
+	ARTConflictType BuildQuART(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count);
 
 	//! Merge another ART into this ART. Both must be locked.
 	//! FIXME: Return ARTConflictType instead of a boolean.

@@ -91,6 +91,22 @@ static void PragmaEnableForceParallelism(ClientContext &context, const FunctionP
 	ClientConfig::GetConfig(context).verify_parallelism = true;
 }
 
+static void PragmaEnableQuARTIndexBuild(ClientContext &context, const FunctionParameters &parameters) {
+	ClientConfig::GetConfig(context).use_quart_index_build = true;
+}
+
+static void PragmaDisableQuARTIndexBuild(ClientContext &context, const FunctionParameters &parameters) {
+	ClientConfig::GetConfig(context).use_quart_index_build = false;
+}
+
+static void PragmaEnableSortedIndexBuild(ClientContext &context, const FunctionParameters &parameters) {
+	ClientConfig::GetConfig(context).force_unsorted_index_build = false;
+}
+
+static void PragmaDisableSortedIndexBuild(ClientContext &context, const FunctionParameters &parameters) {
+	ClientConfig::GetConfig(context).force_unsorted_index_build = true;
+}
+
 static void PragmaForceCheckpoint(ClientContext &context, const FunctionParameters &parameters) {
 	DBConfig::GetConfig(context).options.force_checkpoint = true;
 }
@@ -145,6 +161,11 @@ void PragmaFunctions::RegisterFunction(BuiltinFunctions &set) {
 
 	set.AddFunction(PragmaFunction::PragmaStatement("verify_parallelism", PragmaEnableForceParallelism));
 	set.AddFunction(PragmaFunction::PragmaStatement("disable_verify_parallelism", PragmaDisableForceParallelism));
+
+	set.AddFunction(PragmaFunction::PragmaStatement("enable_quart_index_build", PragmaEnableQuARTIndexBuild));
+	set.AddFunction(PragmaFunction::PragmaStatement("disable_quart_index_build", PragmaDisableQuARTIndexBuild));
+	set.AddFunction(PragmaFunction::PragmaStatement("enable_sorted_index_build", PragmaEnableSortedIndexBuild));
+	set.AddFunction(PragmaFunction::PragmaStatement("disable_sorted_index_build", PragmaDisableSortedIndexBuild));
 
 	set.AddFunction(PragmaFunction::PragmaStatement("enable_object_cache", PragmaEnableObjectCache));
 	set.AddFunction(PragmaFunction::PragmaStatement("disable_object_cache", PragmaDisableObjectCache));
