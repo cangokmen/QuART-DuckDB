@@ -15,83 +15,57 @@ namespace duckdb {
 
 ARTConflictType ARTGroupedBuilder::Append(ArenaAllocator &arena, const unsafe_vector<ARTKey> &keys,
                                           const unsafe_vector<ARTKey> &row_ids, const idx_t count) {
+	if (count == 0) {
+		return ARTConflictType::NO_CONFLICT;
+	}
+
+	if (!art.tree.HasMetadata()) {
+		// Empty tree: the chunk is the first group, and its path starts at the root.
+		D_ASSERT(!has_prev_key && cursor.empty());
+		reference<NodePtr> root_ref(art.tree);
+		auto result = NewSubtree(arena, root_ref, keys, row_ids, 0, count, 0);
+		if (result != ARTConflictType::NO_CONFLICT) {
+			return result;
+		}
+		SetPreviousKey(keys[count - 1]);
+		return ARTConflictType::NO_CONFLICT;
+	}
+
 	idx_t i = 0;
 	while (i < count) {
 		auto &key = keys[i];
 		D_ASSERT(key.len != 0);
 
-		// The group's node is keyed by the last byte of its first key.
-		const auto group_depth = key.len - 1;
-		const auto end = GetGroupEnd(keys, i, count);
-
-		if (!art.tree.HasMetadata()) {
-			// Empty tree: the first group's path starts at the root.
-			D_ASSERT(!has_prev_key && cursor.empty());
-			reference<NodePtr> node_ref(art.tree);
-			ARTConflictType result;
-			if (GetRunEnd(keys, i, end, group_depth) == end) {
-				result = NewLeaf(arena, node_ref, key, 0, row_ids, i, end);
-			} else {
-				if (group_depth != 0) {
-					Prefix::New(art, node_ref, key, 0, group_depth);
-				}
-				result = NewGroupNode(arena, node_ref, keys, row_ids, i, end, group_depth);
-				cursor.emplace_back(node_ref.get(), group_depth);
-			}
-			if (result != ARTConflictType::NO_CONFLICT) {
-				return result;
-			}
-			SetPreviousKey(keys[end - 1]);
-			i = end;
-			continue;
-		}
-
-		// Classify the group against the previous key.
+		// Classify the key against the previous key.
 		const auto depth = GetMismatchDepth(key);
-		if (depth >= group_depth) {
-			// The group continues the previous group (or repeats its last key).
-			auto result = ContinueGroup(arena, keys, row_ids, i, end, group_depth);
-			if (result != ARTConflictType::NO_CONFLICT) {
-				return result;
+		if (depth == key.len) {
+			// The key repeats the previous key: take the per-key insert, which restructures the path.
+			const auto run_end = GetRunEnd(keys, i, count, 0);
+			for (idx_t j = i; j < run_end; j++) {
+				auto result = ARTOperator::Insert(arena, art, art.tree, key, 0, row_ids[j], GateStatus::GATE_NOT_SET,
+				                                  DeleteIndexInfo(), IndexAppendMode::DEFAULT);
+				if (result != ARTConflictType::NO_CONFLICT) {
+					return result;
+				}
 			}
-			SetPreviousKey(keys[end - 1]);
-			i = end;
+			cursor.clear();
+			i = run_end;
 			continue;
 		}
 
 		// FP_INSERT, if the cursor already holds the node at depth, else BRIDGE.
 		auto &parent = GetOrCreatePath(key, depth);
 
-		// Build the group below depth: the bytes up to the group node become its prefix.
+		// The group is the run of keys sharing the bytes up to and including depth.
+		// It hangs under parent at the divergence byte, which no key so far has.
+		const auto end = GetGroupEnd(keys, i, count, depth + 1);
 		NodePtr child;
 		reference<NodePtr> child_ref(child);
-		ARTConflictType result;
-		if (GetRunEnd(keys, i, end, group_depth) == end) {
-			// A single key needs no node: lazy expansion stores its leaf directly.
-			result = NewLeaf(arena, child_ref, key, depth + 1, row_ids, i, end);
-			if (result != ARTConflictType::NO_CONFLICT) {
-				return result;
-			}
-			NodePtr::InsertChild(art, parent, key[depth], child);
-		} else {
-			const auto has_prefix = group_depth > depth + 1;
-			if (has_prefix) {
-				Prefix::New(art, child_ref, key, depth + 1, group_depth - depth - 1);
-			}
-			result = NewGroupNode(arena, child_ref, keys, row_ids, i, end, group_depth);
-			if (result != ARTConflictType::NO_CONFLICT) {
-				return result;
-			}
-			NodePtr::InsertChild(art, parent, key[depth], child);
-
-			// Remember the group node, in case the group continues in the next Append.
-			if (has_prefix) {
-				cursor.emplace_back(child_ref.get(), group_depth);
-			} else {
-				auto slot = parent.GetChildMutable(art, key[depth], true);
-				cursor.emplace_back(*slot, group_depth);
-			}
+		auto result = NewSubtree(arena, child_ref, keys, row_ids, i, end, depth + 1);
+		if (result != ARTConflictType::NO_CONFLICT) {
+			return result;
 		}
+		NodePtr::InsertChild(art, parent, key[depth], child);
 
 		SetPreviousKey(keys[end - 1]);
 		i = end;
@@ -103,23 +77,24 @@ ARTConflictType ARTGroupedBuilder::Append(ArenaAllocator &arena, const unsafe_ve
 // Groups and keys
 //===--------------------------------------------------------------------===//
 
-idx_t ARTGroupedBuilder::GetGroupEnd(const unsafe_vector<ARTKey> &keys, const idx_t start, const idx_t count) const {
-	// The first key is the shortest key of its group, as keys are prefix-free and sorted.
+idx_t ARTGroupedBuilder::GetGroupEnd(const unsafe_vector<ARTKey> &keys, const idx_t start, const idx_t end,
+                                     const idx_t shared_count) const {
 	auto &first = keys[start];
-	const auto shared = first.len - 1;
+	D_ASSERT(shared_count <= first.len);
 	auto shares_prefix = [&](const ARTKey &key) {
-		return key.len >= first.len && memcmp(key.data, first.data, shared) == 0;
+		return key.len >= shared_count && memcmp(key.data, first.data, shared_count) == 0;
 	};
 
-	// A full group of 256 keys is detected in one comparison: all keys in between share the prefix too.
-	auto end = start + 1;
-	if (start + 256 <= count && shares_prefix(keys[start + 255])) {
-		end = start + 256;
+	// Keys are sorted, so all keys between two keys sharing the prefix share it too.
+	// This detects a full group of 256 keys in one comparison.
+	auto group_end = start + 1;
+	if (start + 256 <= end && shares_prefix(keys[start + 255])) {
+		group_end = start + 256;
 	}
-	while (end < count && shares_prefix(keys[end])) {
-		end++;
+	while (group_end < end && shares_prefix(keys[group_end])) {
+		group_end++;
 	}
-	return end;
+	return group_end;
 }
 
 idx_t ARTGroupedBuilder::GetRunEnd(const unsafe_vector<ARTKey> &keys, const idx_t start, const idx_t end,
@@ -154,10 +129,6 @@ idx_t ARTGroupedBuilder::GetMismatchDepth(const ARTKey &key) const {
 	// Keys are prefix-free, so matching up to the shorter length means equal keys.
 	D_ASSERT(prev_key.size() == key.len);
 	return len;
-}
-
-bool ARTGroupedBuilder::EqualsPreviousKey(const ARTKey &key) const {
-	return has_prev_key && prev_key.size() == key.len && memcmp(prev_key.data(), key.data, key.len) == 0;
 }
 
 void ARTGroupedBuilder::SetPreviousKey(const ARTKey &key) {
@@ -234,11 +205,34 @@ NodePtr &ARTGroupedBuilder::GetOrCreatePath(const ARTKey &key, const idx_t depth
 // Nodes and leaves
 //===--------------------------------------------------------------------===//
 
+ARTConflictType ARTGroupedBuilder::NewSubtree(ArenaAllocator &arena, reference<NodePtr> &node_ref,
+                                              const unsafe_vector<ARTKey> &keys, const unsafe_vector<ARTKey> &row_ids,
+                                              const idx_t start, const idx_t end, const idx_t depth) {
+	auto &first = keys[start];
+	if (GetRunEnd(keys, start, end, depth) == end) {
+		return NewLeaf(arena, node_ref, first, depth, row_ids, start, end);
+	}
+
+	// The keys are sorted, so they all share the common prefix of the first and the last key.
+	// Keys are prefix-free, so distinct keys diverge before the shorter key ends.
+	auto &last = keys[end - 1];
+	auto split = depth;
+	while (first[split] == last[split]) {
+		split++;
+		D_ASSERT(split < first.len && split < last.len);
+	}
+	if (split > depth) {
+		Prefix::New(art, node_ref, first, depth, split - depth);
+	}
+	return NewGroupNode(arena, node_ref, keys, row_ids, start, end, split);
+}
+
 ARTConflictType ARTGroupedBuilder::NewGroupNode(ArenaAllocator &arena, NodePtr &node, const unsafe_vector<ARTKey> &keys,
                                                 const unsafe_vector<ARTKey> &row_ids, const idx_t start,
                                                 const idx_t end, const idx_t depth) {
 	// Build the children first, as building a child allocates nodes.
-	NodeChildren children;
+	// The children live in the arena, as deep subtrees recurse.
+	auto &children = *new (arena.AllocateAligned(sizeof(NodeChildren))) NodeChildren();
 	for (idx_t i = start; i < end;) {
 		const auto run_end = GetByteRunEnd(keys, i, end, depth);
 
@@ -300,28 +294,6 @@ ARTConflictType ARTGroupedBuilder::NewGroupNode(ArenaAllocator &arena, NodePtr &
 	return ARTConflictType::NO_CONFLICT;
 }
 
-ARTConflictType ARTGroupedBuilder::NewSubtree(ArenaAllocator &arena, reference<NodePtr> &node_ref,
-                                              const unsafe_vector<ARTKey> &keys, const unsafe_vector<ARTKey> &row_ids,
-                                              const idx_t start, const idx_t end, const idx_t depth) {
-	auto &first = keys[start];
-	if (GetRunEnd(keys, start, end, depth) == end) {
-		return NewLeaf(arena, node_ref, first, depth, row_ids, start, end);
-	}
-
-	// The keys are sorted, so they all share the common prefix of the first and the last key.
-	// Keys are prefix-free, so distinct keys diverge before the shorter key ends.
-	auto &last = keys[end - 1];
-	auto split = depth;
-	while (first[split] == last[split]) {
-		split++;
-		D_ASSERT(split < first.len && split < last.len);
-	}
-	if (split > depth) {
-		Prefix::New(art, node_ref, first, depth, split - depth);
-	}
-	return NewGroupNode(arena, node_ref, keys, row_ids, start, end, split);
-}
-
 ARTConflictType ARTGroupedBuilder::NewLeaf(ArenaAllocator &arena, reference<NodePtr> &node_ref, const ARTKey &key,
                                            const idx_t depth, const unsafe_vector<ARTKey> &row_ids, const idx_t start,
                                            const idx_t end) {
@@ -344,44 +316,6 @@ ARTConflictType ARTGroupedBuilder::NewLeaf(ArenaAllocator &arena, reference<Node
 		                    IndexAppendMode::DEFAULT);
 	}
 	node_ref.get().SetGateStatus(GateStatus::GATE_SET);
-	return ARTConflictType::NO_CONFLICT;
-}
-
-ARTConflictType ARTGroupedBuilder::ContinueGroup(ArenaAllocator &arena, const unsafe_vector<ARTKey> &keys,
-                                                 const unsafe_vector<ARTKey> &row_ids, const idx_t start,
-                                                 const idx_t end, const idx_t depth) {
-	optional_ptr<NodePtr> parent;
-	for (idx_t i = start; i < end;) {
-		const auto run_end = GetByteRunEnd(keys, i, end, depth);
-
-		if (EqualsPreviousKey(keys[i])) {
-			// The child at this byte exists: take the per-key insert, which restructures the path.
-			for (idx_t j = i; j < run_end; j++) {
-				auto result =
-				    ARTOperator::Insert(arena, art, art.tree, keys[j], 0, row_ids[j], GateStatus::GATE_NOT_SET,
-				                        DeleteIndexInfo(), IndexAppendMode::DEFAULT);
-				if (result != ARTConflictType::NO_CONFLICT) {
-					return result;
-				}
-			}
-			cursor.clear();
-			parent = nullptr;
-			i = run_end;
-			continue;
-		}
-
-		if (!parent) {
-			parent = GetOrCreatePath(keys[i], depth);
-		}
-		NodePtr child;
-		reference<NodePtr> child_ref(child);
-		auto result = NewSubtree(arena, child_ref, keys, row_ids, i, run_end, depth + 1);
-		if (result != ARTConflictType::NO_CONFLICT) {
-			return result;
-		}
-		NodePtr::InsertChild(art, *parent, keys[i][depth], child);
-		i = run_end;
-	}
 	return ARTConflictType::NO_CONFLICT;
 }
 
