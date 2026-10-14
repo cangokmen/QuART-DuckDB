@@ -17,6 +17,7 @@ namespace duckdb {
 //! Node256 holds up to 256 children. They are indexed by their key byte.
 class Node256 {
 	friend class Node48;
+	friend class ARTGroupedBuilder;
 
 public:
 	static constexpr NType NODE_256 = NType::NODE_256;

@@ -1,0 +1,432 @@
+# name: test/sql/index/art/create_drop/test_art_grouped_bulk_load.test
+# description: Test grouped bulk loading of ART indexes from sorted data, against the per-chunk build-and-merge path
+# group: [create_drop]
+
+statement ok
+SET index_scan_percentage = 1.0;
+
+statement ok
+SET index_scan_max_count = 1000000000;
+
+foreach grouped true false
+
+foreach threads 1 4
+
+statement ok
+SET art_grouped_bulk_load = {grouped};
+
+statement ok
+SET threads = {threads};
+
+# Dense keys: full 256-key groups, with chunk and partition boundaries inside groups.
+
+statement ok
+CREATE TABLE dense AS SELECT range::INTEGER AS k FROM range(300000);
+
+statement ok
+CREATE INDEX dense_idx ON dense(k);
+
+query I
+SELECT count(*) FROM dense WHERE k >= 1000 AND k < 200000;
+----
+199000
+
+query I
+SELECT k FROM dense WHERE k = 123456;
+----
+123456
+
+query I
+SELECT count(*) FROM dense WHERE k = 300000;
+----
+0
+
+query I
+SELECT count(*) FROM dense WHERE k < 0;
+----
+0
+
+statement ok
+DELETE FROM dense WHERE k % 7 = 0;
+
+query I
+SELECT count(*) FROM dense WHERE k >= 0 AND k < 70;
+----
+60
+
+statement ok
+UPDATE dense SET k = k + 1000000 WHERE k < 10;
+
+query I
+SELECT count(*) FROM dense WHERE k >= 1000000 AND k < 1000010;
+----
+8
+
+statement ok
+DROP TABLE dense;
+
+# Dense keys with small sort partitions: the cursor bridges across many partition gaps.
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+CREATE TABLE dense AS SELECT range::INTEGER AS k FROM range(100000);
+
+statement ok
+CREATE INDEX dense_idx ON dense(k);
+
+query I
+SELECT count(*) FROM dense WHERE k >= 2000 AND k < 50000;
+----
+48000
+
+query I
+SELECT k FROM dense WHERE k = 65535;
+----
+65535
+
+statement ok
+PRAGMA disable_verify_parallelism;
+
+statement ok
+DROP TABLE dense;
+
+# Sorted keys with gaps: groups of varying size and single-key groups.
+
+statement ok
+CREATE TABLE sparse AS SELECT (range * 1000)::BIGINT AS k FROM range(100000);
+
+statement ok
+CREATE INDEX sparse_idx ON sparse(k);
+
+query I
+SELECT count(*) FROM sparse WHERE k >= 50000000 AND k <= 50010000;
+----
+11
+
+query I
+SELECT k FROM sparse WHERE k = 99999000;
+----
+99999000
+
+query I
+SELECT count(*) FROM sparse WHERE k = 999;
+----
+0
+
+statement ok
+DROP TABLE sparse;
+
+# Unsorted input with a wide key range, compared against an unindexed copy.
+
+statement ok
+CREATE TABLE rnd AS SELECT (hash(range) % 1000000000)::BIGINT AS k FROM range(100000);
+
+statement ok
+CREATE TABLE rnd_copy AS SELECT k FROM rnd;
+
+statement ok
+CREATE INDEX rnd_idx ON rnd(k);
+
+query I
+SELECT (SELECT count(*) FROM rnd WHERE k >= 100000000 AND k < 300000000) = (SELECT count(*) FROM rnd_copy WHERE k >= 100000000 AND k < 300000000);
+----
+true
+
+query I
+SELECT count(*) FROM ((SELECT k FROM rnd WHERE k >= 500000000 AND k < 500500000) EXCEPT (SELECT k FROM rnd_copy WHERE k >= 500000000 AND k < 500500000));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT k FROM rnd_copy WHERE k >= 500000000 AND k < 500500000) EXCEPT (SELECT k FROM rnd WHERE k >= 500000000 AND k < 500500000));
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM rnd WHERE k >= 999000000 AND k < 999001000) = (SELECT count(*) FROM rnd_copy WHERE k >= 999000000 AND k < 999001000);
+----
+true
+
+statement ok
+DROP TABLE rnd;
+
+statement ok
+DROP TABLE rnd_copy;
+
+# Repeated keys: nested leaves, including a key repeated across many chunks.
+
+statement ok
+CREATE TABLE dup AS SELECT (range // 3)::INTEGER AS k FROM range(30000);
+
+statement ok
+CREATE INDEX dup_idx ON dup(k);
+
+query I
+SELECT count(*) FROM dup WHERE k = 1234;
+----
+3
+
+query I
+SELECT count(*) FROM dup WHERE k >= 0 AND k < 1000;
+----
+3000
+
+statement ok
+DELETE FROM dup WHERE rowid % 2 = 0;
+
+query I
+SELECT count(*) FROM dup WHERE k = 1234;
+----
+1
+
+query I
+SELECT count(*) FROM dup WHERE k = 1235;
+----
+2
+
+query I
+SELECT count(*) FROM dup WHERE k >= 0 AND k < 1000;
+----
+1500
+
+statement error
+CREATE UNIQUE INDEX dup_unique ON dup(k);
+----
+<REGEX>:.*Data contains duplicates.*
+
+statement ok
+DROP TABLE dup;
+
+statement ok
+CREATE TABLE same AS SELECT 42::INTEGER AS k FROM range(100000);
+
+statement ok
+CREATE INDEX same_idx ON same(k);
+
+query I
+SELECT count(*) FROM same WHERE k = 42;
+----
+100000
+
+query I
+SELECT count(*) FROM same WHERE k = 43;
+----
+0
+
+statement ok
+DROP TABLE same;
+
+statement ok
+CREATE TABLE dup2 AS SELECT range::INTEGER AS k FROM range(5000) UNION ALL SELECT 2047;
+
+statement error
+CREATE UNIQUE INDEX dup2_unique ON dup2(k);
+----
+<REGEX>:.*Data contains duplicates.*
+
+statement ok
+DROP TABLE dup2;
+
+# NULL keys are skipped.
+
+statement ok
+CREATE TABLE nulls AS SELECT (CASE WHEN range % 3 = 0 THEN NULL ELSE range END)::INTEGER AS k FROM range(3000);
+
+statement ok
+CREATE INDEX nulls_idx ON nulls(k);
+
+query I
+SELECT count(*) FROM nulls WHERE k >= 0 AND k < 30;
+----
+20
+
+statement ok
+DROP TABLE nulls;
+
+# One-byte keys form a single group.
+
+statement ok
+CREATE TABLE tiny AS SELECT (range - 50)::TINYINT AS k FROM range(100);
+
+statement ok
+CREATE UNIQUE INDEX tiny_idx ON tiny(k);
+
+statement error
+INSERT INTO tiny VALUES (20);
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO tiny VALUES (60);
+
+statement ok
+DROP TABLE tiny;
+
+# Wide keys and floating point keys.
+
+statement ok
+CREATE TABLE huge AS SELECT range::HUGEINT * 1000000007 AS k FROM range(20000);
+
+statement ok
+CREATE UNIQUE INDEX huge_idx ON huge(k);
+
+query I
+SELECT count(*) FROM huge WHERE k >= 0 AND k < 10000000070;
+----
+10
+
+statement error
+INSERT INTO huge VALUES (1000000007);
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO huge VALUES (1000000008);
+
+statement ok
+DROP TABLE huge;
+
+statement ok
+CREATE TABLE dbl AS SELECT range * 0.5 AS k FROM range(20000);
+
+statement ok
+CREATE INDEX dbl_idx ON dbl(k);
+
+query I
+SELECT count(*) FROM dbl WHERE k >= 10 AND k < 20;
+----
+20
+
+statement ok
+DROP TABLE dbl;
+
+# Strings of varying length sharing long prefixes: paths diverge inside prefixes.
+
+statement ok
+CREATE TABLE strs AS SELECT 'prefix_' || lpad(((range * 7919) % 100003)::VARCHAR, 6, '0') || repeat('x', range % 5) AS s FROM range(50000);
+
+statement ok
+CREATE TABLE strs_copy AS SELECT s FROM strs;
+
+statement ok
+CREATE UNIQUE INDEX strs_idx ON strs(s);
+
+query I
+SELECT s FROM strs WHERE s = 'prefix_007919x';
+----
+prefix_007919x
+
+query I
+SELECT s FROM strs WHERE s = 'prefix_015838xx';
+----
+prefix_015838xx
+
+query I
+SELECT count(*) FROM strs WHERE s = 'prefix_015838x';
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s FROM strs WHERE s >= 'prefix_01' AND s < 'prefix_02') EXCEPT (SELECT s FROM strs_copy WHERE s >= 'prefix_01' AND s < 'prefix_02'));
+----
+0
+
+statement error
+INSERT INTO strs VALUES ('prefix_000000');
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO strs VALUES ('prefix_000000y');
+
+statement ok
+DROP TABLE strs;
+
+statement ok
+DROP TABLE strs_copy;
+
+# Nested string keys: keys sharing a prefix differ at several depths below the group byte.
+
+statement ok
+CREATE TABLE nest AS SELECT substr('abcdefghijklmnopqrstuvwxyz', 1, 1 + range % 26) || '_' || (range // 26)::VARCHAR AS s FROM range(30000);
+
+statement ok
+CREATE TABLE nest_copy AS SELECT s FROM nest;
+
+statement ok
+CREATE UNIQUE INDEX nest_idx ON nest(s);
+
+query I
+SELECT s FROM nest WHERE s = 'abc_17';
+----
+abc_17
+
+query I
+SELECT s FROM nest WHERE s = 'a_1000';
+----
+a_1000
+
+query I
+SELECT count(*) FROM nest WHERE s = 'a_10000';
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s FROM nest WHERE s >= 'ab' AND s < 'ac') EXCEPT (SELECT s FROM nest_copy WHERE s >= 'ab' AND s < 'ac'));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s FROM nest_copy WHERE s >= 'ab' AND s < 'ac') EXCEPT (SELECT s FROM nest WHERE s >= 'ab' AND s < 'ac'));
+----
+0
+
+statement error
+INSERT INTO nest VALUES ('abcd_5');
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO nest VALUES ('abcd_5000');
+
+statement ok
+DROP TABLE nest;
+
+statement ok
+DROP TABLE nest_copy;
+
+# Compound keys.
+
+statement ok
+CREATE TABLE comp AS SELECT (range // 100)::INTEGER AS a, (range % 100)::INTEGER AS b, range::VARCHAR AS c FROM range(50000);
+
+statement ok
+CREATE UNIQUE INDEX comp_idx ON comp(a, b);
+
+statement error
+INSERT INTO comp VALUES (123, 45, 'x');
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO comp VALUES (500, 0, 'x');
+
+statement ok
+CREATE UNIQUE INDEX comp_str_idx ON comp(c, a);
+
+statement error
+INSERT INTO comp VALUES (12, 45, '1245');
+----
+<REGEX>:.*Constraint Error.*
+
+statement ok
+INSERT INTO comp VALUES (600, 45, '1245');
+
+statement ok
+DROP TABLE comp;
+
+endloop
+
+endloop

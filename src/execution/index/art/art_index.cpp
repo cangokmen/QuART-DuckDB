@@ -4,11 +4,13 @@
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/index_type.hpp"
+#include "duckdb/execution/index/art/art_grouped_builder.hpp"
 #include "duckdb/execution/index/art/art_key.hpp"
 #include "duckdb/execution/index/art/art_operator.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -22,6 +24,8 @@ namespace {
 class ARTBuildBindData : public IndexBuildBindData {
 public:
 	bool sorted = false;
+	//! Build sorted input with grouped bulk loading instead of building and merging one ART per chunk.
+	bool grouped = true;
 };
 
 unique_ptr<IndexBuildBindData> ARTBuildBind(IndexBuildBindInput &input) {
@@ -32,6 +36,7 @@ unique_ptr<IndexBuildBindData> ARTBuildBind(IndexBuildBindInput &input) {
 	// We used to not sort for VARCHAR and multi-column indexes with the old sort implementation
 	// The new sorting implementation handles these cases much better and sorting improves performance now
 	bind_data->sorted = true;
+	bind_data->grouped = Settings::Get<ArtGroupedBulkLoadSetting>(input.context);
 
 	return std::move(bind_data);
 }
@@ -69,6 +74,8 @@ public:
 
 	unsafe_vector<ARTKey> keys;
 	unsafe_vector<ARTKey> row_ids;
+	//! Builds the local ART from the sorted input, if grouped bulk loading is enabled.
+	unique_ptr<ARTGroupedBuilder> grouped_builder;
 
 	explicit ARTBuildLocalState(ClientContext &context) : arena_allocator(Allocator::Get(context)) {};
 };
@@ -84,6 +91,11 @@ unique_ptr<IndexBuildLocalState> ARTBuildLocalInit(IndexBuildInitLocalStateInput
 	// Initialize the local sink state.
 	state->keys.resize(STANDARD_VECTOR_SIZE);
 	state->row_ids.resize(STANDARD_VECTOR_SIZE);
+
+	auto &bind_data = input.bind_data->Cast<ARTBuildBindData>();
+	if (bind_data.sorted && bind_data.grouped) {
+		state->grouped_builder = make_uniq<ARTGroupedBuilder>(state->local_index->Cast<ART>());
+	}
 
 	return std::move(state);
 }
@@ -112,6 +124,16 @@ void ARTBuildSinkSorted(IndexBuildSinkInput &input, DataChunk &key_chunk, DataCh
 	auto &l_state = input.local_state.Cast<ARTBuildLocalState>();
 	auto &storage = input.table.GetStorage();
 	auto &l_index = l_state.local_index;
+
+	// Grouped bulk loading appends the chunk directly to the local ART.
+	if (l_state.grouped_builder) {
+		auto result =
+		    l_state.grouped_builder->Append(l_state.arena_allocator, l_state.keys, l_state.row_ids, key_chunk.size());
+		if (result != ARTConflictType::NO_CONFLICT) {
+			throw ConstraintException("Data contains duplicates on indexed column(s)");
+		}
+		return;
+	}
 
 	// Construct an ART for this chunk.
 	auto art = make_uniq<ART>(input.info.GetIndexName(), l_index->GetConstraintType(), l_index->GetColumnIds(),

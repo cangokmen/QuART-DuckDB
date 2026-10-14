@@ -20,6 +20,7 @@ namespace duckdb {
 class Node48 {
 	friend class Node16;
 	friend class Node256;
+	friend class ARTGroupedBuilder;
 
 public:
 	static constexpr NType NODE_48 = NType::NODE_48;

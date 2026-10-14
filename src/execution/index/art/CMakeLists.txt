@@ -2,6 +2,7 @@ add_library_unity(
   duckdb_execution_index_art
   OBJECT
   art_builder.cpp
+  art_grouped_builder.cpp
   art.cpp
   art_index.cpp
   art_key.cpp

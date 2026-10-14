@@ -372,6 +372,19 @@ struct ArrowOutputVersionSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct ArtGroupedBulkLoadSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "art_grouped_bulk_load";
+	static constexpr const char *Description = "Build ART indexes from sorted data with grouped bulk loading. If set "
+	                                           "to false, each chunk is built into a separate ART and merged.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "true";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct AsofLoopJoinThresholdSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "asof_loop_join_threshold";

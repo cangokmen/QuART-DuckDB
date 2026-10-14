@@ -19,6 +19,7 @@ class BaseNode {
 	friend class Node4;
 	friend class Node16;
 	friend class Node48;
+	friend class ARTGroupedBuilder;
 
 public:
 	static constexpr NType TYPE = NODE_TYPE;
@@ -178,6 +179,7 @@ private:
 class Node16 : public BaseNode<16, NType::NODE_16> {
 	friend class Node4;
 	friend class Node48;
+	friend class ARTGroupedBuilder;
 
 public:
 	static constexpr NType NODE_16 = NType::NODE_16;

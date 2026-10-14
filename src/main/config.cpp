@@ -91,6 +91,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(ArrowLosslessConversionSetting),
     DUCKDB_SETTING(ArrowOutputListViewSetting),
     DUCKDB_SETTING_CALLBACK(ArrowOutputVersionSetting),
+    DUCKDB_SETTING(ArtGroupedBulkLoadSetting),
     DUCKDB_SETTING(AsofLoopJoinThresholdSetting),
     DUCKDB_GLOBAL(AsyncThreadsSetting),
     DUCKDB_SETTING(AutoCheckpointSkipWalThresholdSetting),

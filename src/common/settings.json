@@ -165,6 +165,13 @@
         "default_value": "1.0"
     },
     {
+        "name": "art_grouped_bulk_load",
+        "description": "Build ART indexes from sorted data with grouped bulk loading. If set to false, each chunk is built into a separate ART and merged.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "true"
+    },
+    {
         "name": "asof_loop_join_threshold",
         "description": "The maximum number of rows we need on the left side of an ASOF join to use a nested loop join.",
         "type": "UBIGINT",
